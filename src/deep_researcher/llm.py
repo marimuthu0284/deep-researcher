@@ -128,21 +128,29 @@ async def _invoke(
                 return result
             if isinstance(result, dict):
                 return schema.model_validate(result)
+        except OSError as exc:
+            # Network-level failure (dropped TLS connection, connection reset,
+            # etc.) - not a schema/provider problem, so it's worth a retry on
+            # this same model rather than silently falling through.
+            raise _Transient(f"network error on {model_name}: {exc}") from exc
         except Exception:  # noqa: BLE001 - fall back to manual JSON parsing
             pass
 
         # Fallback path: ask for raw JSON and validate ourselves.
         schema_hint = json.dumps(schema.model_json_schema())
-        raw = await client.ainvoke(
-            [
-                SystemMessage(
-                    content=system
-                    + "\n\nRespond ONLY with a single JSON object that validates "
-                    "against this JSON schema:\n" + schema_hint
-                ),
-                HumanMessage(content=user),
-            ]
-        )
+        try:
+            raw = await client.ainvoke(
+                [
+                    SystemMessage(
+                        content=system
+                        + "\n\nRespond ONLY with a single JSON object that validates "
+                        "against this JSON schema:\n" + schema_hint
+                    ),
+                    HumanMessage(content=user),
+                ]
+            )
+        except OSError as exc:
+            raise _Transient(f"network error on {model_name}: {exc}") from exc
     text = raw.content if isinstance(raw.content, str) else str(raw.content)
     try:
         payload = json.loads(_extract_json(text))

@@ -78,15 +78,16 @@ async def judge(state: ResearchState) -> dict:
         for a in analyses
     )
 
+    judge_errors: list[str] = []
     verdicts = await asyncio.gather(
-        *[_judge_article(a, filters, corpus_titles) for a in analyses]
+        *[_judge_article(a, filters, corpus_titles, judge_errors) for a in analyses]
     )
     verdicts = [v for v in verdicts if v is not None]
     degraded_articles = sum(
         1 for v in verdicts if v.resolved_position == _ARTICLE_FALLBACK_MARKER
     )
 
-    judged = await _synthesize(topic, filters, verdicts, analyses)
+    judged = await _synthesize(topic, filters, verdicts, analyses, judge_errors)
     judged.degraded_articles = degraded_articles
     # If every article's verdict fell back, treat the whole synthesis as degraded
     # even if the synthesis call itself happened to return something.
@@ -95,6 +96,7 @@ async def judge(state: ResearchState) -> dict:
 
     return {
         "judged": judged,
+        "errors": judge_errors,
         "status_log": [
             event(
                 "Judge",
@@ -107,7 +109,10 @@ async def judge(state: ResearchState) -> dict:
 
 
 async def _judge_article(
-    analysis: ArticleAnalysis, filters: str, corpus_titles: str
+    analysis: ArticleAnalysis,
+    filters: str,
+    corpus_titles: str,
+    judge_errors: list[str],
 ) -> ArticleVerdict | None:
     bundle = analysis.bundle
     critique = analysis.critique
@@ -133,8 +138,9 @@ async def _judge_article(
         recency = jr.recency_relevance.score
         resolved = jr.resolved_position
         dissent = jr.dissent_note
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
         # Fallback: derive components from critique-only signals.
+        judge_errors.append(f"judge per-article ({bundle.article_id}): {exc}")
         corroboration = min(10.0, 3.0 + 2.0 * (bundle.syndication_count - 1))
         recency = 6.0
         resolved = _ARTICLE_FALLBACK_MARKER
@@ -164,6 +170,7 @@ async def _synthesize(
     filters: str,
     verdicts: list[ArticleVerdict],
     analyses: list[ArticleAnalysis],
+    judge_errors: list[str],
 ) -> JudgedState:
     verdict_blob = json.dumps(
         [
@@ -186,7 +193,8 @@ async def _synthesize(
                 topic=topic, filters=filters, verdicts=truncate(verdict_blob, 6000)
             ),
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        judge_errors.append(f"judge synthesis: {exc}")
         synthesis_degraded = True
         synth = _Synthesis(
             executive_summary=(

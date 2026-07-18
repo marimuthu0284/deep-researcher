@@ -108,3 +108,9 @@ async def test_judge_flags_degraded_when_llm_unavailable(monkeypatch):
     assert judged.degraded_articles == 2
     for v in judged.verdicts:
         assert FALLBACK_MARKER in v.resolved_position
+
+    # The real cause must be surfaced, not just the generic fallback text -
+    # a degraded run with no clue why (network error vs bad key vs rate
+    # limit) is undebuggable from the report alone.
+    assert out["errors"], "expected the real exception(s) in state['errors']"
+    assert all("simulated outage" in e for e in out["errors"])

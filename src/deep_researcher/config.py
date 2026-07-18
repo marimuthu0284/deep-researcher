@@ -109,9 +109,12 @@ class Settings:
     # preprints for a news topic) and "judge model unavailable" synthesis.
     api_timeout: int = field(default_factory=lambda: int(os.getenv("DR_API_TIMEOUT", "40")))
     # Cap on simultaneous in-flight LLM calls, so the parallel debate fan-out
-    # stays under provider rate limits (e.g. Groq free tier ~30 req/min).
+    # stays under provider rate limits (e.g. Groq free tier ~30 req/min) and
+    # under constrained networks (corporate proxies/TLS inspection have been
+    # observed to drop connections - SSLEOFError - above ~4-6 concurrent
+    # HTTPS calls to the same host).
     max_concurrency: int = field(
-        default_factory=lambda: int(os.getenv("DR_MAX_CONCURRENCY", "6"))
+        default_factory=lambda: int(os.getenv("DR_MAX_CONCURRENCY", "4"))
     )
     cache_dir: Path = field(
         default_factory=lambda: Path(os.getenv("DR_CACHE_DIR", "data/cache"))
