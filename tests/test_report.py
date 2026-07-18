@@ -105,3 +105,35 @@ def test_degraded_banner_shown_when_synthesis_degraded():
     assert "Degraded run" in html
     assert "not a full analysis" in md.lower()
     assert "not a full analysis" in html.lower()
+
+
+def test_insights_section_is_last_and_has_charts():
+    ctx = _fixture()
+    md = build_markdown(ctx)
+    html = build_html(ctx)
+
+    # "at last": Insights must be the final section in both renderings.
+    assert md.rstrip().split("## ")[-1].startswith("Insights")
+    assert html.rstrip().endswith("</div>")
+    assert html.index("<h2>Insights</h2>") > html.index("<h2>References</h2>")
+
+    # Markdown: text-bar distributions present and non-empty for the one verdict.
+    assert "Confidence band distribution" in md
+    assert "Confidence score spread" in md
+    assert "Source mix" in md
+    assert "Strong" in md.split("## Insights")[1]
+
+    # HTML: an actual donut (SVG arcs) and bar charts (SVG rects), not just headings.
+    assert "<svg" in html
+    assert "stroke-dasharray" in html  # donut segment
+    assert "<rect" in html  # bar chart
+    assert "peer reviewed" in html  # source-mix label, underscore -> space
+
+
+def test_insights_handles_no_verdicts_without_crashing():
+    ctx = _fixture()
+    ctx.judged.verdicts = []
+    md = build_markdown(ctx)
+    html = build_html(ctx)
+    assert "No verdicts to summarize" in md
+    assert "No verdicts to chart" in html

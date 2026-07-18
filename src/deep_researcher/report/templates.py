@@ -8,10 +8,11 @@ rubric breakdown. Produces both Markdown and email-safe inline-CSS HTML.
 from __future__ import annotations
 
 import html
+from collections import Counter
 from dataclasses import dataclass
 
 from ..models import ArticleAnalysis, JudgedState
-from ..scoring import WEIGHTS
+from ..scoring import WEIGHTS, band_short
 
 
 @dataclass
@@ -37,6 +38,42 @@ _COMPONENT_LABELS = {
 
 def _citation_index(ctx: ReportContext) -> dict[str, int]:
     return {a.article_id: i + 1 for i, a in enumerate(ctx.analyses)}
+
+
+# --------------------------------------------------------------------------- #
+# Insights data (shared by the Markdown text-bars and the HTML SVG charts)
+# --------------------------------------------------------------------------- #
+_BAND_ORDER = ["Strong", "Moderate", "Emerging", "Weak"]
+# Reuses the same severity colors already used for confidence badges elsewhere
+# in this report, so the Insights section speaks the same visual language
+# rather than introducing a second, unrelated palette.
+_BAND_COLORS = {
+    "Strong": "#1a7f37",
+    "Moderate": "#9a6700",
+    "Emerging": "#bc4c00",
+    "Weak": "#a40e26",
+}
+_HIST_BINS = [(0, 20), (20, 40), (40, 60), (60, 80), (80, 100)]
+
+
+def _band_counts(judged: JudgedState) -> dict[str, int]:
+    counts = {b: 0 for b in _BAND_ORDER}
+    for v in judged.verdicts:
+        counts[band_short(v.confidence_score)] += 1
+    return counts
+
+
+def _confidence_histogram(judged: JudgedState) -> list[tuple[str, int]]:
+    counts = [0] * len(_HIST_BINS)
+    for v in judged.verdicts:
+        idx = min(int(v.confidence_score // 20), len(_HIST_BINS) - 1)
+        counts[idx] += 1
+    return [(f"{lo}-{hi}", n) for (lo, hi), n in zip(_HIST_BINS, counts)]
+
+
+def _source_counts(analyses: list[ArticleAnalysis]) -> list[tuple[str, int]]:
+    c = Counter(a.bundle.source_type.replace("_", " ") for a in analyses)
+    return sorted(c.items(), key=lambda kv: kv[1], reverse=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -136,8 +173,58 @@ def build_markdown(ctx: ReportContext) -> str:
     for a in ctx.analyses:
         n = cite[a.article_id]
         lines.append(f"{n}. [{a.bundle.title}]({a.bundle.url}) — {a.bundle.source_name}")
+    lines.append("")
+
+    lines.extend(_insights_markdown(ctx))
 
     return "\n".join(lines)
+
+
+def _text_bar(value: float, max_value: float, width: int = 20) -> str:
+    if max_value <= 0:
+        return "░" * width
+    filled = round((value / max_value) * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def _insights_markdown(ctx: ReportContext) -> list[str]:
+    j = ctx.judged
+    lines: list[str] = ["## Insights\n"]
+    if j.synthesis_degraded:
+        lines.append(
+            "_Based on fallback confidence scores from a degraded run — "
+            "treat these distributions as illustrative, not reliable._\n"
+        )
+
+    band_counts = _band_counts(j)
+    total = sum(band_counts.values())
+    lines.append("**Confidence band distribution**\n")
+    if total:
+        for b in _BAND_ORDER:
+            n = band_counts[b]
+            if not n:
+                continue
+            pct = round(100 * n / total)
+            lines.append(f"- {b:<9} {_text_bar(n, total)}  {n} ({pct}%)")
+    else:
+        lines.append("_No verdicts to summarize._")
+    lines.append("")
+
+    lines.append("**Confidence score spread**\n")
+    hist = _confidence_histogram(j)
+    max_h = max((v for _, v in hist), default=0)
+    for label, v in hist:
+        lines.append(f"- {label:<7} {_text_bar(v, max_h)}  {v}")
+    lines.append("")
+
+    lines.append("**Source mix**\n")
+    src = _source_counts(ctx.analyses)
+    max_s = max((v for _, v in src), default=0)
+    for label, v in src:
+        lines.append(f"- {label:<15} {_text_bar(v, max_s)}  {v}")
+    lines.append("")
+
+    return lines
 
 
 # --------------------------------------------------------------------------- #
@@ -155,6 +242,123 @@ def _badge_color(confidence: float) -> str:
 
 def _e(text: str) -> str:
     return html.escape(str(text))
+
+
+def _donut_svg(counts: dict[str, int]) -> str:
+    """Confidence-band donut, built as stroked arc segments (no JS/libs)."""
+    total = sum(counts.values())
+    if not total:
+        return "<p style='color:#656d76;font-size:13px'><em>No verdicts to chart.</em></p>"
+
+    cx, cy, r = 70, 70, 50
+    circumference = 2 * 3.14159265 * r
+    gap = 3.0  # px gap between segments, so touching slices stay visually distinct
+    offset = 0.0
+    segments = []
+    for b in _BAND_ORDER:
+        n = counts[b]
+        if not n:
+            continue
+        seg_len = (n / total) * circumference
+        dash = max(seg_len - gap, 0.0)
+        segments.append(
+            f"<circle cx='{cx}' cy='{cy}' r='{r}' fill='none' stroke='{_BAND_COLORS[b]}' "
+            f"stroke-width='22' stroke-dasharray='{dash:.2f} {circumference - dash:.2f}' "
+            f"stroke-dashoffset='{-offset:.2f}' transform='rotate(-90 {cx} {cy})'/>"
+        )
+        offset += seg_len
+
+    center = (
+        f"<text x='{cx}' y='{cy - 4}' text-anchor='middle' font-size='20' "
+        f"font-weight='600' fill='#1f2328'>{total}</text>"
+        f"<text x='{cx}' y='{cy + 14}' text-anchor='middle' font-size='11' "
+        f"fill='#656d76'>article{'s' if total != 1 else ''}</text>"
+    )
+    svg = (
+        f"<svg width='140' height='140' viewBox='0 0 140 140' role='img' "
+        f"aria-label='Confidence band distribution'>{''.join(segments)}{center}</svg>"
+    )
+
+    legend = []
+    table_rows = []
+    for b in _BAND_ORDER:
+        n = counts[b]
+        if not n:
+            continue
+        pct = round(100 * n / total)
+        legend.append(
+            "<div style='display:flex;align-items:center;gap:6px;margin:4px 0;font-size:13px'>"
+            f"<span style='display:inline-block;width:10px;height:10px;border-radius:2px;"
+            f"background:{_BAND_COLORS[b]}'></span><span>{_e(b)} — {n} ({pct}%)</span></div>"
+        )
+        table_rows.append(f"<tr><td>{_e(b)}</td><td>{n}</td><td>{pct}%</td></tr>")
+
+    table = (
+        "<details style='margin-top:8px;font-size:12px;color:#656d76'>"
+        "<summary>Table view</summary>"
+        "<table style='border-collapse:collapse;margin-top:6px'>"
+        "<tr style='text-align:left'><th style='padding:2px 8px 2px 0'>Band</th>"
+        "<th style='padding:2px 8px'>Count</th><th style='padding:2px 8px'>Share</th></tr>"
+        + "".join(table_rows) + "</table></details>"
+    )
+
+    return (
+        "<div style='display:flex;align-items:center;gap:24px;flex-wrap:wrap'>"
+        f"<div>{svg}</div><div>{''.join(legend)}</div></div>{table}"
+    )
+
+
+def _hbar_svg(items: list[tuple[str, int]], color: str = "#2a78d6") -> str:
+    """A minimal single-series horizontal bar/histogram - no external libs."""
+    if not items:
+        return "<p style='color:#656d76;font-size:13px'><em>No data to chart.</em></p>"
+
+    max_v = max(v for _, v in items) or 1
+    bar_h, gap, label_w, chart_w = 18, 10, 90, 220
+    row_h = bar_h + gap
+    height = row_h * len(items) + gap
+    rows = []
+    y = gap / 2
+    for label, v in items:
+        w = (v / max_v) * chart_w
+        text_y = y + bar_h * 0.72
+        rows.append(
+            f"<text x='{label_w - 8}' y='{text_y:.1f}' text-anchor='end' font-size='12' "
+            f"fill='#1f2328'>{_e(label)}</text>"
+        )
+        rows.append(
+            f"<rect x='{label_w}' y='{y:.1f}' width='{w:.1f}' height='{bar_h}' "
+            f"rx='4' fill='{color}'/>"
+        )
+        rows.append(
+            f"<text x='{label_w + w + 6:.1f}' y='{text_y:.1f}' font-size='12' "
+            f"fill='#656d76'>{v}</text>"
+        )
+        y += row_h
+
+    total_w = label_w + chart_w + 40
+    return (
+        f"<svg width='100%' viewBox='0 0 {total_w} {height:.1f}' style='max-width:420px' "
+        f"role='img' aria-label='bar chart'>{''.join(rows)}</svg>"
+    )
+
+
+def _insights_html(ctx: ReportContext) -> str:
+    j = ctx.judged
+    parts = ["<h2>Insights</h2>"]
+    if j.synthesis_degraded:
+        parts.append(
+            "<p style='color:#656d76;font-size:13px'><em>Based on fallback confidence "
+            "scores from a degraded run — treat these distributions as illustrative, "
+            "not reliable.</em></p>"
+        )
+    parts.append("<h3 style='font-size:15px;margin:16px 0 8px'>Confidence band distribution</h3>")
+    parts.append(_donut_svg(_band_counts(j)))
+    parts.append("<h3 style='font-size:15px;margin:20px 0 8px'>Confidence score spread</h3>")
+    parts.append(_hbar_svg(_confidence_histogram(j)))
+    parts.append("<h3 style='font-size:15px;margin:20px 0 8px'>Source mix</h3>")
+    parts.append(_hbar_svg(_source_counts(ctx.analyses)))
+    return "".join(parts)
 
 
 def build_html(ctx: ReportContext) -> str:
@@ -277,6 +481,8 @@ def build_html(ctx: ReportContext) -> str:
             f"{_e(a.bundle.source_name)}</li>"
         )
     p.append("</ol>")
+
+    p.append(_insights_html(ctx))
 
     p.append("</div>")
     return "".join(p)
