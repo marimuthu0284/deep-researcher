@@ -88,6 +88,16 @@ class Settings:
             "RESEND_FROM", "Deep Researcher <onboarding@resend.dev>"
         )
     )
+    # Gmail SMTP (preferred when set): sends as a real Gmail address via an
+    # App Password, so reports can be delivered from @gmail.com without
+    # needing a verified custom domain (which Resend requires). Takes
+    # priority over Resend when both are configured.
+    gmail_sender_email: str | None = field(
+        default_factory=lambda: os.getenv("GMAIL_SENDER_EMAIL")
+    )
+    gmail_app_password: str | None = field(
+        default_factory=lambda: os.getenv("GMAIL_APP_PASSWORD")
+    )
 
     models: dict[str, str] = field(default_factory=_resolve_models)
     fallback_chain: list[str] = field(default_factory=_resolve_fallback_chain)

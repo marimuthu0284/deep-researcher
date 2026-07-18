@@ -65,12 +65,21 @@ def check() -> list[Capability]:
     )
 
     # Email.
+    gmail_ready = bool(settings.gmail_sender_email and settings.gmail_app_password)
     caps.append(
         Capability(
-            "Email (Resend)",
+            "Email (Gmail SMTP)",
+            gmail_ready,
+            f"from {settings.gmail_sender_email}" if gmail_ready
+            else "not configured - set GMAIL_SENDER_EMAIL + GMAIL_APP_PASSWORD",
+        )
+    )
+    caps.append(
+        Capability(
+            "Email (Resend, fallback)",
             bool(settings.resend_api_key),
             f"from {settings.resend_from}" if settings.resend_api_key
-            else "no key - reports fall back to a local file link",
+            else "no key - used only if Gmail SMTP isn't configured either",
         )
     )
 

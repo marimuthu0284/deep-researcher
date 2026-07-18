@@ -154,7 +154,9 @@ def main() -> None:
         filters = st.text_input(
             "Filters", value="peer-reviewed papers and major news, last 30 days"
         )
-        email = st.text_input("Email report to (optional)", value="")
+        email = st.text_input(
+            "Email report to (optional)", value="marimuthupolaris@gmail.com"
+        )
         use_cache = st.checkbox("Use cached run if available", value=True)
         replay = st.checkbox("Replay cached run (offline demo)", value=False)
         go = st.button("Run research", type="primary")
